@@ -23,22 +23,6 @@ Signal-based timed loop
 using namespace std;
 using namespace chrono;
 
-int runstats(double x, size_t n, double &mean, double &sd) {
-  if (n <= 1) { // recursion formula: first element (base-1)
-    mean = x;
-    sd = 0;
-  } else {
-    const double n1 = n - 1;
-    const double n2 = n - 2;
-    const double nr = 1.0 / n;
-    const double n1r = 1.0 / n1;
-    const double nn1 = n / n1;
-    mean = nr * (n1 * mean + x);
-    sd = sqrt(n1r * (n2 * pow(sd, 2) + nn1 * pow(mean - x, 2)));
-  }
-  return n;
-}
-
 template <typename DurationType = duration<double>, bool EnableStats = false> class Timer {
 public:
   template <typename IntervalType, typename MaxWaitType>
@@ -111,7 +95,7 @@ public:
       double dt = elapsed().count();
       _min = min(_min, dt);
       _max = max(_max, dt);
-      runstats(dt, _n++, _mean, _sd);
+      update_stats(dt);
     }
     return ret;
   }
@@ -136,6 +120,22 @@ public:
   }
 
 private:
+  void update_stats(double x) {
+    _n++;
+    if (_n <= 1) { // recursion formula: first element (base-1)
+      _mean = x;
+      _sd = 0;
+    } else {
+      const double n1 = _n - 1;
+      const double n2 = _n - 2;
+      const double nr = 1.0 / _n;
+      const double n1r = 1.0 / n1;
+      const double nn1 = _n / n1;
+      _mean = nr * (n1 * _mean + x);
+      _sd = sqrt(n1r * (n2 * pow(_sd, 2) + nn1 * pow(_mean - x, 2)));
+    }
+  }
+
   DurationType _interval;
   DurationType _max_wait;
   struct itimerval _rep;
