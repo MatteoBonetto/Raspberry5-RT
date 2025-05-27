@@ -10,6 +10,5 @@ Compile with: clang++ -std=c++17 -o timer timer.cpp
 Run as:       sudo ./timer 0.05
 */
 #define TIMER_MAIN
-#define ENABLE_SCHEDULER
 #include "timer.hpp"
 

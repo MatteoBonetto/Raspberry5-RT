@@ -21,23 +21,41 @@ Author: paolo.bosetti@unitn.it
 #include <time.h>
 #include <unistd.h>
 
+#define NSEC_PER_SEC 1000000000ULL
+
 using namespace std;
 using namespace chrono;
 
 template <typename DurationType = duration<double>, bool EnableStats = false>
 class Timer {
 public:
-
   // LIFE-CYCLE ----------------------------------------------------------------
   template <typename IntervalType, typename MaxWaitType>
-  explicit Timer(IntervalType interval, MaxWaitType max_wait) {
+  explicit Timer(IntervalType interval, MaxWaitType max_wait,
+                 bool rt_sched = false) {
     _interval = duration_cast<DurationType>(interval);
     _max_wait = duration_cast<DurationType>(max_wait);
-    set();
+    time_to_time_struct(_interval, _rep.it_interval);
+    time_to_time_struct(_interval, _rep.it_value);
+    time_to_time_struct(_max_wait, _rqtp);
   }
 
   ~Timer() { stop(); };
-  
+
+  void enable_rt_scheduler() {
+#ifdef ENABLE_RT_SCHEDULER
+    // Set the scheduler to SCHED_FIFO with priority 1
+    sched_param param;
+    param.sched_priority = 1;
+    if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
+      throw runtime_error(string("Failed to set scheduler: ") +
+                          strerror(errno));
+    }
+#else
+    throw runtime_error("Real-time scheduler not enabled in this build");
+#endif
+  }
+
   string what() {
     stringstream ss;
     ss << "Interval: " << _rep.it_value.tv_sec + _rep.it_value.tv_usec / 1.0E6
@@ -48,13 +66,12 @@ public:
 
   // METHODS -------------------------------------------------------------------
 
-  void set() {
-    time_to_time_struct(_interval, _rep.it_interval);
-    time_to_time_struct(_interval, _rep.it_value);
-    time_to_time_struct(_max_wait, _rqtp);
-  }  
-
   void start() {
+#ifdef ENABLE_RT_SCHEDULER
+    clock_gettime(CLOCK_REALTIME, &_now_ts);
+    timespec_add_interval(&_now_ts);
+    _now = system_clock::now().time_since_epoch();
+#else
     struct itimerval itimer;
     // First interval:
     itimer.it_interval.tv_sec = 0;
@@ -67,6 +84,7 @@ public:
       throw runtime_error(std::strerror(errno));
     }
     signal(SIGALRM, [](int signo) {});
+#endif
     _started = true;
   }
 
@@ -97,6 +115,19 @@ public:
       throw runtime_error("Timer: not started");
     }
     int ret = 0;
+    double dt = 0;
+#ifdef ENABLE_RT_SCHEDULER
+    ret = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &_now_ts, NULL);
+    timespec_add_interval(&_now_ts);
+    auto now = system_clock::now().time_since_epoch();
+    time_to_time_struct(now - _now, _rmtp);
+    _now = now; // update the current time
+    dt = elapsed().count();
+    if (dt > _max_wait.count()) {
+      _rmtp.tv_sec = _rmtp.tv_nsec = 0; 
+      ret = -1;
+    }
+#else
     // call NOT interrupted by SIGALRM
     if (nanosleep(&_rqtp, &_rmtp) == 0) {
       _rmtp.tv_sec = _rmtp.tv_nsec = 0;
@@ -107,10 +138,13 @@ public:
       ret = 0;
     }
     if constexpr (EnableStats) {
-      double dt = elapsed().count();
+      dt = elapsed().count();
+    }
+#endif
+    if constexpr (EnableStats) {
       _min = min(_min, dt);
       _max = max(_max, dt);
-      update_stats(dt);
+      if (ret == 0) update_stats(dt); // don't update on signals
     }
     return ret;
   }
@@ -142,6 +176,10 @@ private:
   size_t _n = 0;
   double _min = INFINITY, _max = 0, _mean = 0, _sd = 0;
   bool _started = false;
+#ifdef ENABLE_RT_SCHEDULER
+  struct timespec _now_ts;
+  duration<double> _now;
+#endif
 
   // PRIVATE METHODS -----------------------------------------------------------
   void update_stats(double x) {
@@ -160,17 +198,26 @@ private:
     }
   }
 
-  template <typename T, typename S> static int time_to_time_struct(T d, S &ts) {
+  template <typename T, typename S>
+  static void time_to_time_struct(T d, S &ts) {
     ts.tv_sec = duration_cast<seconds>(d).count();
     if constexpr (is_same<S, struct timeval>::value) {
       ts.tv_usec = duration_cast<microseconds>(d).count() - ts.tv_sec * 1E6;
     } else if constexpr (is_same<S, struct timespec>::value) {
       ts.tv_nsec = duration_cast<nanoseconds>(d).count() - ts.tv_sec * 1E9;
     } else {
-      return -1;
+      throw runtime_error("Unsupported time struct type");
     }
-    return 0;
   }
+
+#ifdef ENABLE_RT_SCHEDULER
+  inline void timespec_add_interval(struct timespec *t) {
+    long dns = duration_cast<nanoseconds>(_interval).count();
+    t->tv_nsec += dns;
+    t->tv_sec += t->tv_nsec / NSEC_PER_SEC;
+    t->tv_nsec %= NSEC_PER_SEC;
+  }
+#endif
 };
 
 /*
@@ -197,23 +244,20 @@ int main(int argc, const char *argv[]) {
     delay = atof(argv[1]);
 
   signal(SIGINT, [](int signo) { Running = false; });
-#ifdef ENABLE_SCHEDULER
-  // Set the scheduler to SCHED_FIFO with priority 1
-  sched_param param;
-  param.sched_priority = 1;
-  if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-    cerr << "Failed to set scheduler: " << strerror(errno) << endl;
-    return 1;
-  }
-#endif
 
   duration<double> d(delay);
   duration<double> max_d(delay * 2); // 1 second
 
-  Timer<duration<double>, true> t(
-      d, max_d); // Default template parameter is duration<double> in secs
+  // Default template parameter is duration<double> in secs
+  Timer<duration<double>, true> t(d, max_d, true);
   // Or:
   // Timer<milliseconds> t(milliseconds(200), milliseconds(1000));
+
+  try {
+    t.enable_rt_scheduler();
+  } catch (const runtime_error &e) {
+    cerr << "Error enabling real-time scheduler: " << e.what() << endl;
+  }
 
   cerr << t.what();
   t.start();
@@ -226,10 +270,14 @@ int main(int argc, const char *argv[]) {
          << t.stats()["min"] << "," << t.stats()["max"] << ","
          << t.stats()["mean"] << "," << t.stats()["sd"] << "," << endl;
   }
+  cout << endl;
   cout << "Timer stopped after " << t.stats()["n"] << " events." << endl;
+  cout << "Min time: " << t.stats()["min"] << " sec" << endl;
+  cout << "Max time: " << t.stats()["max"] << " sec" << endl;
+  cout << "Mean time: " << t.stats()["mean"] << " sec" << endl;
+  cout << "Standard deviation: " << t.stats()["sd"] << " sec" << endl;
 
   t.stop();
-  cout << "Done." << endl;
   return 0;
 }
 

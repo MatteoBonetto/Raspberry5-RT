@@ -120,6 +120,7 @@ using namespace chrono;
 milliseconds d(100);
 milliseconds max_d(200); 
 Timer<milliseconds, true> t(d, max_d);
+t.enable_rt_scheduler(); // only on PREEMPT_RT kernels!
 t.start();
 ```
 
@@ -128,3 +129,27 @@ Then, within the timed loop, call `t.wait()` to pause the loop until the next mu
 Alternatively, you can call `t.wait_throw()`, which throws a runtime error if the loop took more than `max_d`.
 
 The timer can be disable with `t.stop()`, and running statistics can be obtained with `t.stats()`.
+
+### Building project example
+
+On a standard kernel:
+
+```sh
+cmake -Bbuild -DCMAKE_BUILD_TYPE=Release
+cmake --build build 
+```
+
+On a PREEMPT_RT kernel:
+
+```sh
+cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DENABLE_RT_SCHEDULER=ON
+cmake --build build
+```
+
+Then run it as:
+
+```sh
+sudo build/timer <interval in seconds with decimals> > <destination_log.csv>
+```
+
+Note that if you enable the RT with `t.enable_rt_scheduler()`, then you must launch it as `sudo`.
