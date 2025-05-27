@@ -59,6 +59,7 @@ public:
       throw runtime_error(std::strerror(errno));
     }
     signal(SIGALRM, [](int signo) {});
+    _started = true;
   }
 
   void stop() {
@@ -68,6 +69,11 @@ public:
     setitimer(ITIMER_REAL, &timer, NULL);
     signal(SIGALRM, SIG_DFL);
     _n = 0;
+    _min = INFINITY;
+    _max = 0;
+    _mean = 0;
+    _sd = 0;
+    _started = false;
   }
 
   DurationType remaining() {
@@ -81,6 +87,9 @@ public:
   }
 
   int wait() {
+    if (!_started) {
+      throw runtime_error("Timer: not started");
+    }
     int ret = 0;
     // call NOT interrupted by SIGALRM
     if (nanosleep(&_rqtp, &_rmtp) == 0) {
@@ -143,6 +152,7 @@ private:
   map<string, double> _stats;
   size_t _n = 0;
   double _min = INFINITY, _max = 0, _mean = 0, _sd = 0;
+  bool _started = false;
 
   template <typename T, typename S> static int time_to_time_struct(T d, S &ts) {
     ts.tv_sec = duration_cast<seconds>(d).count();
