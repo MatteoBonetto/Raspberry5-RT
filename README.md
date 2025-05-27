@@ -153,3 +153,5 @@ sudo build/timer [interval in seconds with decimals] > [destination_log.csv]
 ```
 
 Note that if you enable the RT with `t.enable_rt_scheduler()`, then you must launch it as `sudo`.
+
+Typical standard deviation values on a Raspberry 5 RT kernel are **2.7 microseconds**.
