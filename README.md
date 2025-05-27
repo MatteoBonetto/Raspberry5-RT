@@ -149,7 +149,7 @@ cmake --build build
 Then run it as:
 
 ```sh
-sudo build/timer <interval in seconds with decimals> > <destination_log.csv>
+sudo build/timer [interval in seconds with decimals] > [destination_log.csv]
 ```
 
 Note that if you enable the RT with `t.enable_rt_scheduler()`, then you must launch it as `sudo`.
