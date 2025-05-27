@@ -1,14 +1,18 @@
 /*
-  _____ _                            _               
- |_   _(_)_ __ ___   ___ _ __    ___| | __ _ ___ ___ 
+  _____ _                            _
+ |_   _(_)_ __ ___   ___ _ __    ___| | __ _ ___ ___
    | | | | '_ ` _ \ / _ \ '__|  / __| |/ _` / __/ __|
    | | | | | | | | |  __/ |    | (__| | (_| \__ \__ \
    |_| |_|_| |_| |_|\___|_|     \___|_|\__,_|___/___/
-                                                     
+
 Signal-based timed loop
+Author: paolo.bosetti@unitn.it
 */
 #include <chrono>
-#include <errno.h>  // for errno
+#include <cmath>
+#include <cstring>
+#include <errno.h> // for errno
+#include <map>
 #include <signal.h> // for signal
 #include <sstream>
 #include <stdexcept> // for runtime_error
@@ -16,15 +20,15 @@ Signal-based timed loop
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-#include <cstring>
-#include <cmath>
-#include <map>
 
 using namespace std;
 using namespace chrono;
 
-template <typename DurationType = duration<double>, bool EnableStats = false> class Timer {
+template <typename DurationType = duration<double>, bool EnableStats = false>
+class Timer {
 public:
+
+  // LIFE-CYCLE ----------------------------------------------------------------
   template <typename IntervalType, typename MaxWaitType>
   explicit Timer(IntervalType interval, MaxWaitType max_wait) {
     _interval = duration_cast<DurationType>(interval);
@@ -32,12 +36,8 @@ public:
     set();
   }
 
-  void set() {
-    time_to_time_struct(_interval, _rep.it_interval);
-    time_to_time_struct(_interval, _rep.it_value);
-    time_to_time_struct(_max_wait, _rqtp);
-  }
-
+  ~Timer() { stop(); };
+  
   string what() {
     stringstream ss;
     ss << "Interval: " << _rep.it_value.tv_sec + _rep.it_value.tv_usec / 1.0E6
@@ -45,6 +45,14 @@ public:
        << "Max wait: " << _rqtp.tv_sec + _rqtp.tv_nsec / 1.0E9 << endl;
     return ss.str();
   }
+
+  // METHODS -------------------------------------------------------------------
+
+  void set() {
+    time_to_time_struct(_interval, _rep.it_interval);
+    time_to_time_struct(_interval, _rep.it_value);
+    time_to_time_struct(_max_wait, _rqtp);
+  }  
 
   void start() {
     struct itimerval itimer;
@@ -82,9 +90,7 @@ public:
     return duration_cast<DurationType>(sec + nsec);
   }
 
-  DurationType elapsed() {
-    return _max_wait - remaining();
-  }
+  DurationType elapsed() { return _max_wait - remaining(); }
 
   int wait() {
     if (!_started) {
@@ -96,7 +102,7 @@ public:
       _rmtp.tv_sec = _rmtp.tv_nsec = 0;
       ret = -1;
     }
-    // call interrupted by SIGALRM 
+    // call interrupted by SIGALRM
     else {
       ret = 0;
     }
@@ -110,11 +116,9 @@ public:
   }
 
   void wait_throw() {
-    if (wait()) 
+    if (wait())
       throw runtime_error("Timer: max allocated time exceeded");
   }
-
-  ~Timer() { stop(); };
 
   map<string, double> stats() {
     if constexpr (EnableStats) {
@@ -129,6 +133,17 @@ public:
   }
 
 private:
+  // ATTRIBUTES ----------------------------------------------------------------
+  DurationType _interval;
+  DurationType _max_wait;
+  struct itimerval _rep;
+  struct timespec _rqtp, _rmtp;
+  map<string, double> _stats;
+  size_t _n = 0;
+  double _min = INFINITY, _max = 0, _mean = 0, _sd = 0;
+  bool _started = false;
+
+  // PRIVATE METHODS -----------------------------------------------------------
   void update_stats(double x) {
     _n++;
     if (_n <= 1) { // recursion formula: first element (base-1)
@@ -145,15 +160,6 @@ private:
     }
   }
 
-  DurationType _interval;
-  DurationType _max_wait;
-  struct itimerval _rep;
-  struct timespec _rqtp, _rmtp;
-  map<string, double> _stats;
-  size_t _n = 0;
-  double _min = INFINITY, _max = 0, _mean = 0, _sd = 0;
-  bool _started = false;
-
   template <typename T, typename S> static int time_to_time_struct(T d, S &ts) {
     ts.tv_sec = duration_cast<seconds>(d).count();
     if constexpr (is_same<S, struct timeval>::value) {
@@ -167,16 +173,13 @@ private:
   }
 };
 
-
-
-
 /*
-  _____ _____ ____ _____ 
+  _____ _____ ____ _____
  |_   _| ____/ ___|_   _|
-   | | |  _| \___ \ | |  
-   | | | |___ ___) || |  
-   |_| |_____|____/ |_|  
-                         
+   | | |  _| \___ \ | |
+   | | | |___ ___) || |
+   |_| |_____|____/ |_|
+
 */
 
 #ifdef TIMER_MAIN
@@ -184,7 +187,7 @@ private:
 #include <iostream>
 #ifdef ENABLE_SCHEDULER
 #include <sched.h>
-#endif 
+#endif
 
 bool Running = true;
 
@@ -207,7 +210,8 @@ int main(int argc, const char *argv[]) {
   duration<double> d(delay);
   duration<double> max_d(delay * 2); // 1 second
 
-  Timer<duration<double>, true> t(d, max_d); // Default template parameter is duration<double> in secs
+  Timer<duration<double>, true> t(
+      d, max_d); // Default template parameter is duration<double> in secs
   // Or:
   // Timer<milliseconds> t(milliseconds(200), milliseconds(1000));
 
@@ -218,13 +222,9 @@ int main(int argc, const char *argv[]) {
   cout << "n,dt,min,max,mean,sd" << endl;
   while (Running) {
     t.wait();
-    cout << t.stats()["n"] << ","
-         << t.elapsed().count() << ","
-         << t.stats()["min"] << ","
-         << t.stats()["max"] << ","
-         << t.stats()["mean"] << ","
-         << t.stats()["sd"] << ","
-         << endl;
+    cout << t.stats()["n"] << "," << t.elapsed().count() << ","
+         << t.stats()["min"] << "," << t.stats()["max"] << ","
+         << t.stats()["mean"] << "," << t.stats()["sd"] << "," << endl;
   }
   cout << "Timer stopped after " << t.stats()["n"] << " events." << endl;
 
