@@ -67,7 +67,7 @@ Append the following lines **at the end** of `/boot/firmware/config.txt`:
 os_prefix=RT/
 overlay_prefix=overlays-RT/
 kernel=/kernel_2712-RT.img
-``` 
+```
 
 Then `sudo reboot` to load the new kernel.
 
@@ -104,7 +104,7 @@ tar czvf linux_6.15_RT_RPi5.tgz linux
 
 ## The `Timer` class
 
-The `Timer` class provides a precise timing mechanism. Usage is simple
+The `Timer` class provides a precise timing mechanism. Usage is simple.
 
 First instantiate the timer. It is a templated class that takes two parameters:
 
