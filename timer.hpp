@@ -21,6 +21,26 @@ Author: paolo.bosetti@unitn.it
 #include <time.h>
 #include <unistd.h>
 
+/*
+Time scheme:
+
+          Dt                           Dt                              
+├──────────────────────────►├──────────────────────────►│              
+│                           │                           │              
+│                           │                           │              
+│ TET                       │                           │              
+├───────►│                  │                           │              
+│        │                  │                           │              
+▼────────┼──────────────────▼───────────────────────────▼─────────────┐
+│########│::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::│
+│########│::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::│
+└────────┼───────────────────────────────────┬────────────────────────┘
+         │                                   │                         
+         │            Dt_max                 │                         
+         ├──────────────────────────────────►│                         
+ */ 
+
+
 #define NSEC_PER_SEC 1000000000ULL
 
 using namespace std;
@@ -29,6 +49,12 @@ using namespace chrono;
 template <typename DurationType = duration<double>, bool EnableStats = false>
 class Timer {
 public:
+  enum TimerErrorType {
+    TIMER_OK = 0,
+    TIMER_ERR_SIGNAL_LATE = -1,
+    TIMER_ERR_MAX_WAIT_EXCEEDED = -2
+  };
+
   // LIFE-CYCLE ----------------------------------------------------------------
   template <typename IntervalType, typename MaxWaitType>
   explicit Timer(IntervalType interval, MaxWaitType max_wait,
@@ -67,10 +93,10 @@ public:
   // METHODS -------------------------------------------------------------------
 
   void start() {
+    _last = system_clock::now().time_since_epoch();
 #ifdef ENABLE_RT_SCHEDULER
     clock_gettime(CLOCK_REALTIME, &_now_ts);
     timespec_add_interval(&_now_ts);
-    _now = system_clock::now().time_since_epoch();
 #else
     struct itimerval itimer;
     // First interval:
@@ -98,8 +124,10 @@ public:
     _min = INFINITY;
     _max = 0;
     _mean = 0;
+    _tet = 0;
     _sd = 0;
     _started = false;
+    _first = true;
   }
 
   DurationType remaining() {
@@ -110,16 +138,16 @@ public:
 
   DurationType elapsed() { return _max_wait - remaining(); }
 
-  int wait() {
+  TimerErrorType wait() {
     if (!_started) {
       throw runtime_error("Timer: not started");
     }
-    int ret = 0;
+    TimerErrorType ret = TIMER_OK;
     double dt = 0;
+    auto now = system_clock::now().time_since_epoch();
 #ifdef ENABLE_RT_SCHEDULER
     ret = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &_now_ts, NULL);
     timespec_add_interval(&_now_ts);
-    auto now = system_clock::now().time_since_epoch();
     time_to_time_struct(now - _now, _rmtp);
     _now = now; // update the current time
     dt = elapsed().count();
@@ -131,27 +159,41 @@ public:
     // call NOT interrupted by SIGALRM
     if (nanosleep(&_rqtp, &_rmtp) == 0) {
       _rmtp.tv_sec = _rmtp.tv_nsec = 0;
-      ret = -1;
+      ret = TIMER_ERR_SIGNAL_LATE;
     }
     // call interrupted by SIGALRM
     else {
-      ret = 0;
+      ret = TIMER_OK;
     }
-    if constexpr (EnableStats) {
-      dt = elapsed().count();
-    }
+    dt = duration_cast<DurationType>(now - _last).count();
 #endif
     if constexpr (EnableStats) {
-      _min = min(_min, dt);
-      _max = max(_max, dt);
-      if (ret == 0) update_stats(dt); // don't update on signals
+      if (!_first) {
+        _min = min(_min, dt);
+        _max = max(_max, dt);
+        _tet = dt - duration_cast<DurationType>(_max_wait - remaining()).count();
+        if (ret == TIMER_OK) update_stats(dt); // don't update on signals
+      }
+      _first = false;
     }
+    if (dt > _max_wait.count()) {
+      _rmtp.tv_sec = _rmtp.tv_nsec = 0; // reset remaining time
+      ret = TIMER_ERR_MAX_WAIT_EXCEEDED; // indicate that max wait time exceeded
+    }
+    _last = now;
     return ret;
   }
 
   void wait_throw() {
-    if (wait())
-      throw runtime_error("Timer: max allocated time exceeded");
+    switch (wait()) {
+    case TIMER_ERR_SIGNAL_LATE:
+      throw runtime_error("Timer: signal was late");
+    case TIMER_ERR_MAX_WAIT_EXCEEDED:
+      throw runtime_error("Timer: cycle time exceeded maximum: " +
+                          to_string(_max_wait.count()) + " sec");
+    default:
+      return;
+    }
   }
 
   map<string, double> stats() {
@@ -160,7 +202,8 @@ public:
               {"min", _min},
               {"max", _max},
               {"mean", _mean},
-              {"sd", _sd}};
+              {"sd", _sd},
+              {"tet", _tet}};
     } else {
       throw runtime_error("Timer: stats not enabled");
     }
@@ -174,12 +217,10 @@ private:
   struct timespec _rqtp, _rmtp;
   map<string, double> _stats;
   size_t _n = 0;
-  double _min = INFINITY, _max = 0, _mean = 0, _sd = 0;
-  bool _started = false;
-#ifdef ENABLE_RT_SCHEDULER
+  double _min = INFINITY, _max = 0, _mean = 0, _sd = 0, _tet = 0;
+  bool _started = false, _first = true;
   struct timespec _now_ts;
-  duration<double> _now;
-#endif
+  duration<double> _last;
 
   // PRIVATE METHODS -----------------------------------------------------------
   void update_stats(double x) {
@@ -194,6 +235,7 @@ private:
       const double n1r = 1.0 / n1;
       const double nn1 = _n / n1;
       _mean = nr * (n1 * _mean + x);
+      _tet = nr * (n1 * _tet + x);
       _sd = sqrt(n1r * (n2 * pow(_sd, 2) + nn1 * pow(_mean - x, 2)));
     }
   }
@@ -232,6 +274,7 @@ private:
 #ifdef TIMER_MAIN
 
 #include <iostream>
+#include <thread>
 #ifdef ENABLE_SCHEDULER
 #include <sched.h>
 #endif
@@ -246,7 +289,7 @@ int main(int argc, const char *argv[]) {
   signal(SIGINT, [](int signo) { Running = false; });
 
   duration<double> d(delay);
-  duration<double> max_d(delay * 2); // 1 second
+  duration<double> max_d(delay * 1.1); // 1 second
 
   // Default template parameter is duration<double> in secs
   Timer<duration<double>, true> t(d, max_d, true);
@@ -263,18 +306,21 @@ int main(int argc, const char *argv[]) {
   t.start();
   double min = 0, max = INFINITY;
 
-  cout << "n,dt,min,max,mean,sd" << endl;
+  cout << "n,dt,min,max,mean,sd,tet" << endl;
   while (Running) {
-    t.wait();
     cout << t.stats()["n"] << "," << t.elapsed().count() << ","
          << t.stats()["min"] << "," << t.stats()["max"] << ","
-         << t.stats()["mean"] << "," << t.stats()["sd"] << "," << endl;
+         << t.stats()["mean"] << "," << t.stats()["sd"] << ","
+         << t.stats()["tet"] << endl;
+    this_thread::sleep_for(chrono::milliseconds(75));
+    t.wait_throw();
   }
   cout << endl;
   cout << "Timer stopped after " << t.stats()["n"] << " events." << endl;
   cout << "Min time: " << t.stats()["min"] << " sec" << endl;
   cout << "Max time: " << t.stats()["max"] << " sec" << endl;
   cout << "Mean time: " << t.stats()["mean"] << " sec" << endl;
+  cout << "Mean TET: " << t.stats()["tet"] << " sec" << endl;
   cout << "Standard deviation: " << t.stats()["sd"] << " sec" << endl;
 
   t.stop();
