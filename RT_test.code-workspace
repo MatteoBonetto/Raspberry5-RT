@@ -1,0 +1,12 @@
+{
+	"settings": {
+		"C_Cpp.default.defines": [
+			"ENABLE_RT_SCHEDULER"
+		]
+	},
+	"folders": [
+		{
+			"path": "."
+		}
+	]
+}

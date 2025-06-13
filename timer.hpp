@@ -82,7 +82,7 @@ public:
 #endif
   }
 
-  string what() {
+  string what() const {
     stringstream ss;
     ss << "Interval: " << _rep.it_value.tv_sec + _rep.it_value.tv_usec / 1.0E6
        << endl
@@ -130,13 +130,13 @@ public:
     _first = true;
   }
 
-  DurationType remaining() {
+  DurationType remaining() const {
     auto sec = seconds(_rmtp.tv_sec);
     auto nsec = nanoseconds(_rmtp.tv_nsec);
     return duration_cast<DurationType>(sec + nsec);
   }
 
-  DurationType elapsed() { return _max_wait - remaining(); }
+  DurationType elapsed() const { return _max_wait - remaining(); }
 
   double dt() const { return _dt; }
 
