@@ -2,7 +2,17 @@
 	"settings": {
 		"C_Cpp.default.defines": [
 			"ENABLE_RT_SCHEDULER"
-		]
+		],
+		"files.associations": {
+			"*.h": "c",
+			"*.rmd": "markdown",
+			"*.hh": "c++",
+			"optional": "cpp",
+			"regex": "cpp",
+			"vector": "cpp",
+			"map": "cpp",
+			"stdexcept": "cpp"
+		}
 	},
 	"folders": [
 		{

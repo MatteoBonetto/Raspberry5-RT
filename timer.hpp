@@ -22,7 +22,7 @@ Author: paolo.bosetti@unitn.it
 #include <unistd.h>
 
 /*
-Time scheme:
+Time scheme for nanosleep-based timer:
 
           Dt                           Dt                              
 ├──────────────────────────►├──────────────────────────►│              
@@ -46,19 +46,25 @@ Time scheme:
 using namespace std;
 using namespace chrono;
 
+class TimerError : public runtime_error {
+public:
+  TimerError(const string &message) : runtime_error(message) {}
+  TimerError(const char *message) : runtime_error(message) {}
+};
+
 template <typename DurationType = duration<double>, bool EnableStats = false>
 class Timer {
 public:
   enum TimerErrorType {
     TIMER_OK = 0,
     TIMER_ERR_SIGNAL_LATE = -1,
-    TIMER_ERR_MAX_WAIT_EXCEEDED = -2
+    TIMER_ERR_MAX_WAIT_EXCEEDED = -2,
+    TIMER_ERR_INTERRUPTED = -3
   };
 
   // LIFE-CYCLE ----------------------------------------------------------------
   template <typename IntervalType, typename MaxWaitType>
-  explicit Timer(IntervalType interval, MaxWaitType max_wait,
-                 bool rt_sched = false) {
+  explicit Timer(IntervalType interval, MaxWaitType max_wait) {
     _interval = duration_cast<DurationType>(interval);
     _max_wait = duration_cast<DurationType>(max_wait);
     time_to_time_struct(_interval, _rep.it_interval);
@@ -74,11 +80,11 @@ public:
     sched_param param;
     param.sched_priority = 1;
     if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-      throw runtime_error(string("Failed to set scheduler: ") +
+      throw TimerError(string("Failed to set scheduler: ") +
                           strerror(errno));
     }
 #else
-    throw runtime_error("Real-time scheduler not enabled in this build");
+    throw TimerError("Real-time scheduler not enabled in this build");
 #endif
   }
 
@@ -107,7 +113,7 @@ public:
     itimer.it_value.tv_usec = 250 * 1000;
 
     if (setitimer(ITIMER_REAL, &_rep, NULL) != 0) {
-      throw runtime_error(std::strerror(errno));
+      throw TimerError(std::strerror(errno));
     }
     signal(SIGALRM, [](int signo) {});
 #endif
@@ -130,52 +136,42 @@ public:
     _first = true;
   }
 
-  DurationType remaining() const {
-    auto sec = seconds(_rmtp.tv_sec);
-    auto nsec = nanoseconds(_rmtp.tv_nsec);
-    return duration_cast<DurationType>(sec + nsec);
-  }
-
-  DurationType elapsed() const { return _max_wait - remaining(); }
-
   double dt() const { return _dt; }
 
   TimerErrorType wait() {
     if (!_started) {
-      throw runtime_error("Timer: not started");
+      throw TimerError("Timer: not started");
     }
     TimerErrorType ret = TIMER_OK;
     _dt = 0;
-    auto now = system_clock::now().time_since_epoch();
-#ifdef ENABLE_RT_SCHEDULER
-    ret = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &_now_ts, NULL);
-    timespec_add_interval(&_now_ts);
-    time_to_time_struct(now - _now, _rmtp);
-    _now = now; // update the current time
-    dt = elapsed().count();
-    if (dt > _max_wait.count()) {
-      _rmtp.tv_sec = _rmtp.tv_nsec = 0; 
-      ret = -1;
+    chrono::duration<double> pre_sleep, now;
+    if constexpr (EnableStats) {
+      pre_sleep = system_clock::now().time_since_epoch();
     }
+#ifdef ENABLE_RT_SCHEDULER
+    if (clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &_now_ts, NULL) != 0) {
+      ret = TIMER_ERR_INTERRUPTED;
+    }
+    timespec_add_interval(&_now_ts);
 #else
     // call NOT interrupted by SIGALRM
-    if (nanosleep(&_rqtp, &_rmtp) == 0) {
-      _rmtp.tv_sec = _rmtp.tv_nsec = 0;
+    if (nanosleep(&_rqtp, NULL) == 0) {
       ret = TIMER_ERR_SIGNAL_LATE;
     }
-    _dt = duration_cast<DurationType>(now - _last).count();
 #endif
+    now = system_clock::now().time_since_epoch();
+    _dt = duration_cast<DurationType>(now - _last).count();
     if constexpr (EnableStats) {
+      _tet = _dt - duration_cast<DurationType>(now - pre_sleep).count();
       if (!_first) {
         _min = min(_min, _dt);
         _max = max(_max, _dt);
-        _tet = _dt - duration_cast<DurationType>(_max_wait - remaining()).count();
+        // _tet = _dt - duration_cast<DurationType>(_max_wait - remaining()).count();
         if (ret == TIMER_OK) update_stats(_dt); // don't update on signals
       }
       _first = false;
     }
     if (_dt > _max_wait.count()) {
-      _rmtp.tv_sec = _rmtp.tv_nsec = 0; // reset remaining time
       ret = TIMER_ERR_MAX_WAIT_EXCEEDED; // indicate that max wait time exceeded
     }
     _last = now;
@@ -185,16 +181,18 @@ public:
   void wait_throw() {
     switch (wait()) {
     case TIMER_ERR_SIGNAL_LATE:
-      throw runtime_error("Timer: signal was late");
+      throw TimerError("Timer: signal was late");
     case TIMER_ERR_MAX_WAIT_EXCEEDED:
-      throw runtime_error("Timer: cycle time exceeded maximum: " +
+      throw TimerError("Timer: cycle time exceeded maximum: " +
                           to_string(_max_wait.count()) + " sec");
+    case TIMER_ERR_INTERRUPTED:
+      throw TimerError("Timer: clock_nanosleep interrupted by signal");
     default:
       return;
     }
   }
 
-  map<string, double> stats() {
+  map<string, double> stats() const {
     if constexpr (EnableStats) {
       return {{"n", _n},
               {"min", _min},
@@ -203,7 +201,7 @@ public:
               {"sd", _sd},
               {"tet", _tet}};
     } else {
-      throw runtime_error("Timer: stats not enabled");
+      throw TimerError("Timer: stats not enabled");
     }
   }
 
@@ -212,7 +210,7 @@ private:
   DurationType _interval;
   DurationType _max_wait;
   struct itimerval _rep;
-  struct timespec _rqtp, _rmtp;
+  struct timespec _rqtp;
   map<string, double> _stats;
   size_t _n = 0;
   double _min = INFINITY, _max = 0, _mean = 0, _sd = 0, _tet = 0;
@@ -248,7 +246,7 @@ private:
     } else if constexpr (is_same<S, struct timespec>::value) {
       ts.tv_nsec = duration_cast<nanoseconds>(d).count() - ts.tv_sec * 1E9;
     } else {
-      throw runtime_error("Unsupported time struct type");
+      throw TimerError("Unsupported time struct type");
     }
   }
 
@@ -292,13 +290,13 @@ int main(int argc, const char *argv[]) {
   duration<double> max_d(delay * 1.1); // 1 second
 
   // Default template parameter is duration<double> in secs
-  Timer<duration<double>, true> t(d, max_d, true);
+  Timer<duration<double>, true> t(d, max_d);
   // Or:
   // Timer<milliseconds> t(milliseconds(200), milliseconds(1000));
 
   try {
     t.enable_rt_scheduler();
-  } catch (const runtime_error &e) {
+  } catch (const TimerError &e) {
     cerr << "Error enabling real-time scheduler: " << e.what() << endl;
   }
 
@@ -313,7 +311,12 @@ int main(int argc, const char *argv[]) {
          << t.stats()["mean"] << "," << t.stats()["sd"] << ","
          << t.stats()["tet"] << endl;
     this_thread::sleep_for(chrono::milliseconds(75));
-    t.wait_throw();
+    try {
+      t.wait_throw();
+    } catch (const TimerError &e) {
+      cerr << "Error: " << e.what() << endl;
+      Running = false;
+    }
   }
   cout << endl;
   cout << "Timer stopped after " << t.stats()["n"] << " events." << endl;
