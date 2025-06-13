@@ -138,12 +138,14 @@ public:
 
   DurationType elapsed() { return _max_wait - remaining(); }
 
+  double dt() const { return _dt; }
+
   TimerErrorType wait() {
     if (!_started) {
       throw runtime_error("Timer: not started");
     }
     TimerErrorType ret = TIMER_OK;
-    double dt = 0;
+    _dt = 0;
     auto now = system_clock::now().time_since_epoch();
 #ifdef ENABLE_RT_SCHEDULER
     ret = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &_now_ts, NULL);
@@ -161,22 +163,18 @@ public:
       _rmtp.tv_sec = _rmtp.tv_nsec = 0;
       ret = TIMER_ERR_SIGNAL_LATE;
     }
-    // call interrupted by SIGALRM
-    else {
-      ret = TIMER_OK;
-    }
-    dt = duration_cast<DurationType>(now - _last).count();
+    _dt = duration_cast<DurationType>(now - _last).count();
 #endif
     if constexpr (EnableStats) {
       if (!_first) {
-        _min = min(_min, dt);
-        _max = max(_max, dt);
-        _tet = dt - duration_cast<DurationType>(_max_wait - remaining()).count();
-        if (ret == TIMER_OK) update_stats(dt); // don't update on signals
+        _min = min(_min, _dt);
+        _max = max(_max, _dt);
+        _tet = _dt - duration_cast<DurationType>(_max_wait - remaining()).count();
+        if (ret == TIMER_OK) update_stats(_dt); // don't update on signals
       }
       _first = false;
     }
-    if (dt > _max_wait.count()) {
+    if (_dt > _max_wait.count()) {
       _rmtp.tv_sec = _rmtp.tv_nsec = 0; // reset remaining time
       ret = TIMER_ERR_MAX_WAIT_EXCEEDED; // indicate that max wait time exceeded
     }
@@ -221,12 +219,14 @@ private:
   bool _started = false, _first = true;
   struct timespec _now_ts;
   duration<double> _last;
+  double _dt = 0; // elapsed time in seconds
 
   // PRIVATE METHODS -----------------------------------------------------------
   void update_stats(double x) {
     _n++;
     if (_n <= 1) { // recursion formula: first element (base-1)
       _mean = x;
+      _tet = 0;
       _sd = 0;
     } else {
       const double n1 = _n - 1;
@@ -308,7 +308,7 @@ int main(int argc, const char *argv[]) {
 
   cout << "n,dt,min,max,mean,sd,tet" << endl;
   while (Running) {
-    cout << t.stats()["n"] << "," << t.elapsed().count() << ","
+    cout << t.stats()["n"] << "," << t.dt() << ","
          << t.stats()["min"] << "," << t.stats()["max"] << ","
          << t.stats()["mean"] << "," << t.stats()["sd"] << ","
          << t.stats()["tet"] << endl;
