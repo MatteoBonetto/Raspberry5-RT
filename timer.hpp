@@ -8,6 +8,9 @@
 Signal-based timed loop
 Author: paolo.bosetti@unitn.it
 */
+#ifndef TIMER_HPP
+#define TIMER_HPP
+
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -21,24 +24,26 @@ Author: paolo.bosetti@unitn.it
 #include <time.h>
 #include <unistd.h>
 
+// clang-format off
 /*
 Time scheme for nanosleep-based timer:
 
-          Dt                           Dt                              
-├──────────────────────────►├──────────────────────────►│              
-│                           │                           │              
-│                           │                           │              
-│ TET                       │                           │              
-├───────►│                  │                           │              
-│        │                  │                           │              
+          Dt                           Dt
+├──────────────────────────►├──────────────────────────►│
+│                           │                           │
+│                           │                           │
+│ TET                       │                           │
+├───────►│                  │                           │
+│        │                  │                           │
 ▼────────┼──────────────────▼───────────────────────────▼─────────────┐
 │########│::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::│
 │########│::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::│
 └────────┼───────────────────────────────────┬────────────────────────┘
-         │                                   │                         
-         │            Dt_max                 │                         
-         ├──────────────────────────────────►│                         
- */ 
+         │                                   │
+         │            Dt_max                 │
+         ├──────────────────────────────────►│
+ */
+// clang-format on
 
 
 #define NSEC_PER_SEC 1000000000ULL
@@ -80,8 +85,7 @@ public:
     sched_param param;
     param.sched_priority = 1;
     if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-      throw TimerError(string("Failed to set scheduler: ") +
-                          strerror(errno));
+      throw TimerError(string("Failed to set scheduler: ") + strerror(errno));
     }
 #else
     throw TimerError("Real-time scheduler not enabled in this build");
@@ -166,8 +170,8 @@ public:
       if (!_first) {
         _min = min(_min, _dt);
         _max = max(_max, _dt);
-        // _tet = _dt - duration_cast<DurationType>(_max_wait - remaining()).count();
-        if (ret == TIMER_OK) update_stats(_dt); // don't update on signals
+        if (ret == TIMER_OK)
+          update_stats(_dt); // don't update on signals
       }
       _first = false;
     }
@@ -183,8 +187,9 @@ public:
     case TIMER_ERR_SIGNAL_LATE:
       throw TimerError("Timer: signal was late");
     case TIMER_ERR_MAX_WAIT_EXCEEDED:
-      throw TimerError("Timer: cycle time exceeded maximum: " +
-                          to_string(_max_wait.count()) + " sec");
+      throw TimerError("Timer: cycle time " + to_string(_dt) +
+                       " exceeded maximum: " + to_string(_max_wait.count()) +
+                       " sec");
     case TIMER_ERR_INTERRUPTED:
       throw TimerError("Timer: clock_nanosleep interrupted by signal");
     default:
@@ -194,12 +199,8 @@ public:
 
   map<string, double> stats() const {
     if constexpr (EnableStats) {
-      return {{"n", _n},
-              {"min", _min},
-              {"max", _max},
-              {"mean", _mean},
-              {"sd", _sd},
-              {"tet", _tet}};
+      return {{"n", _n},       {"min", _min}, {"max", _max},
+              {"mean", _mean}, {"sd", _sd},   {"tet", _tet}};
     } else {
       throw TimerError("Timer: stats not enabled");
     }
@@ -260,6 +261,8 @@ private:
 #endif
 };
 
+#endif // TIMER_HPP
+
 /*
   _____ _____ ____ _____
  |_   _| ____/ ___|_   _|
@@ -306,10 +309,9 @@ int main(int argc, const char *argv[]) {
 
   cout << "n,dt,min,max,mean,sd,tet" << endl;
   while (Running) {
-    cout << t.stats()["n"] << "," << t.dt() << ","
-         << t.stats()["min"] << "," << t.stats()["max"] << ","
-         << t.stats()["mean"] << "," << t.stats()["sd"] << ","
-         << t.stats()["tet"] << endl;
+    cout << t.stats()["n"] << "," << t.dt() << "," << t.stats()["min"] << ","
+         << t.stats()["max"] << "," << t.stats()["mean"] << ","
+         << t.stats()["sd"] << "," << t.stats()["tet"] << endl;
     this_thread::sleep_for(chrono::milliseconds(75));
     try {
       t.wait_throw();
